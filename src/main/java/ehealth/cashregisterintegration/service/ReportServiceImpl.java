@@ -1,32 +1,44 @@
 package ehealth.cashregisterintegration.service;
 
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-
-import ehealth.cashregisterintegration.data.model.TotalReport;
+import com.google.gson.Gson;
+import com.mashape.unirest.http.HttpResponse;
+import com.mashape.unirest.http.JsonNode;
+import com.mashape.unirest.http.Unirest;
+import com.mashape.unirest.http.exceptions.UnirestException;
+import ehealth.cashregisterintegration.data.dto.FreeSaleDTO;
+import ehealth.cashregisterintegration.data.dto.ReportDTO;
 import ehealth.cashregisterintegration.data.model.CashRegisterConfig;
-import ehealth.cashregisterintegration.data.model.ItemReport;
-import ehealth.cashregisterintegration.data.dto.SaleDTO;
+import ehealth.cashregisterintegration.data.model.ItemSale;
+import ehealth.cashregisterintegration.data.model.Sale;
+import ehealth.cashregisterintegration.data.model.listen.DailyReport;
+import ehealth.cashregisterintegration.data.model.listen.ItemReport;
 import ehealth.cashregisterintegration.repository.CashRegisterConfigRepository;
-import ehealth.cashregisterintegration.repository.TotalReportRepository;
+import ehealth.cashregisterintegration.repository.DailyReportRepository;
+import ehealth.cashregisterintegration.repository.SaleRepository;
+import ehealth.cashregisterintegration.utils.SaleUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.modelmapper.ModelMapper;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.nio.file.*;
-
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -36,32 +48,69 @@ public class ReportServiceImpl implements ReportService {
 
     private final CashRegisterConfigRepository configRepository;
 
-    private final TotalReportRepository totalReportRepository;
+    private final DailyReportRepository dailyReportRepository;
+
+    private final SaleRepository saleRepository;
+
+    private final SaleUtils saleUtils;
+
+    private final ModelMapper mapper;
+
+    private final Gson gson;
+
+    private final SimpleDateFormat dateFormatter = new SimpleDateFormat("dd/MM/yyyy");
 
     @Override
-    public void sendSellInfo(SaleDTO sale) {
+    public void saveAndSendSaleInfo(CashRegisterConfig config, FreeSaleDTO saleDTO) {
 
-        CashRegisterConfig config = this.configRepository.findAll().get(0);
+        BigDecimal total = saleUtils.calculateTotal(saleDTO);
+        ReportDTO report = new ReportDTO(config.getDeviceName(),config.getLocation(), saleDTO, total);
+        report.getSale().setNumber(saleUtils.formSaleNumber(config.getDeviceName(), saleDTO));
 
-        String encodedBasicAuth = HttpHeaders.encodeBasicAuth(config.getAstoreUsername(),
-                config.getAstorePassword(), StandardCharsets.UTF_8);
+        List<ItemSale> itemSales = Arrays.stream(report.getSale().getItems())
+                .map(itemSaleDTO -> mapper.map(itemSaleDTO, ItemSale.class))
+                .collect(Collectors.toList());
 
-        WebClient client = WebClient.builder()
-                .baseUrl(config.getAstoreUrl())
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, encodedBasicAuth)
+        Date date = getDate(report);
+
+        Sale sale = Sale.builder()
+                .total(report.getTotal())
+                .date(date)
+                .items(itemSales)
                 .build();
 
-        client.post()
-                .uri("/report/" + config.getDeviceName())
-                .bodyValue(sale)
-                .retrieve()
-                .bodyToMono(String.class)
-                .subscribe(res -> {
-                    log.info("Sale report for item: " + sale.getItemNumber() + "sync successfully!");
-                }, err -> {
-                    log.error(err.getMessage());
-                });
+        String encodedBasicAuth = HttpHeaders.encodeBasicAuth(config.getCredentials().getUsername(),
+                config.getCredentials().getPassword(), StandardCharsets.UTF_8);
+
+        try {
+            log.info("Sending report to accounting service...");
+            HttpResponse<JsonNode> response = Unirest.post(config.getAccountingServiceUrl() + "/report")
+                    .header(HttpHeaders.AUTHORIZATION, encodedBasicAuth)
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                    .body(gson.toJson(report))
+                    .asJson();
+
+            if (response.getStatus() == HttpStatus.OK.value() || response.getStatus() == HttpStatus.CREATED.value()) {
+                sale.setSync(true);
+                log.info("Report successfully sync...");
+            }
+
+        } catch (UnirestException e) {
+            log.error("Error " + e.getMessage());
+        }
+
+        saleRepository.save(sale);
+    }
+
+    private Date getDate(ReportDTO report) {
+        Date date;
+        try {
+            date = dateFormatter.parse(report.getSale().getDate());
+        } catch (ParseException e) {
+            date = new Date();
+            log.error("Cant parse date");
+        }
+        return date;
     }
 
     @Override
@@ -70,7 +119,6 @@ public class ReportServiceImpl implements ReportService {
         CompletableFuture.runAsync(() -> {
 
             try {
-
                 CashRegisterConfig config = configRepository.findAll().get(0);
 
                 WatchService watchService = FileSystems.getDefault().newWatchService();
@@ -88,9 +136,9 @@ public class ReportServiceImpl implements ReportService {
                     for (WatchEvent<?> event : key.pollEvents()) {
                         log.info("Event kind: " + event.kind() + ". File affected: " + event.context() + ".");
                         String filePath = config.getDirToListen() + "\\" + event.context();
-                        TotalReport totalReport = readReport(filePath);
-                        upsertTotalReport(totalReport);
-                        writeCSVFile("report.csv", totalReport.getItemReports(), delimiter, quotes);
+                        DailyReport dailyReport = readReport(filePath);
+                        upsertTotalReport(dailyReport);
+                        writeCSVFile("report.csv", dailyReport.getItemReports(), delimiter, quotes);
                     }
                     key.reset();
                 }
@@ -102,40 +150,39 @@ public class ReportServiceImpl implements ReportService {
         });
     }
 
-
-    //    @Scheduled(fixedRate = 5000)
+    // @Scheduled(fixedRate = 5000)
     public void sendDailyReports() {
-        TotalReport dailyReport = calculateDailyReport();
+        DailyReport dailyReport = calculateDailyReport();
 
         //if daily report exist
         if (dailyReport.getOperator() != null) {
 
-            totalReportRepository.findByDate(dailyReport.getDate())
+            dailyReportRepository.findByDate(dailyReport.getDate())
                     .ifPresentOrElse((reportInDB) -> {
 
                         CashRegisterConfig config = configRepository.findAll().get(0);
 
-                        String encodedBasicAuth = HttpHeaders.encodeBasicAuth(config.getAstoreUsername(),
-                                config.getAstorePassword(), StandardCharsets.UTF_8);
+//                        String encodedBasicAuth = HttpHeaders.encodeBasicAuth(config.getAstoreUsername(),
+//                                config.getAstorePassword(), StandardCharsets.UTF_8);
 
-                        WebClient client = WebClient.builder()
-                                .baseUrl(config.getAstoreUrl())
-                                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                                .defaultHeader(HttpHeaders.AUTHORIZATION, encodedBasicAuth)
-                                .build();
-
-                        client.post()
-                                .uri("/report/" + config.getDeviceName())
-                                .bodyValue(dailyReport)
-                                .retrieve()
-                                .bodyToMono(String.class)
-                                .subscribe(res -> {
-                                    log.info("Daily report for " + dailyReport.getDate() + "sync successfully!");
-                                    reportInDB.setDailySync(true);
-                                }, err -> {
-                                    log.error(err.getMessage());
-                                    reportInDB.setDailySync(false);
-                                }, () -> totalReportRepository.save(reportInDB));
+//                        WebClient client = WebClient.builder()
+//                                .baseUrl(config.getAstoreUrl())
+//                                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+//                                .defaultHeader(HttpHeaders.AUTHORIZATION, encodedBasicAuth)
+//                                .build();
+//
+//                        client.post()
+//                                .uri("/report/" + config.getDeviceName())
+//                                .bodyValue(dailyReport)
+//                                .retrieve()
+//                                .bodyToMono(String.class)
+//                                .subscribe(res -> {
+//                                    log.info("Daily report for " + dailyReport.getDate() + "sync successfully!");
+//                                    reportInDB.setDailySync(true);
+//                                }, err -> {
+//                                    log.error(err.getMessage());
+//                                    reportInDB.setDailySync(false);
+//                                }, () -> dailyReportRepository.save(reportInDB));
 
                     }, () -> log.error("Daily report date is ahead of time"));
         }
@@ -143,18 +190,18 @@ public class ReportServiceImpl implements ReportService {
 
     //must be ready till the send time
     //if today report is not ready logs warning message
-    private TotalReport calculateDailyReport() {
+    private DailyReport calculateDailyReport() {
         Instant now = Instant.now();
         Instant yesterday = now.minus(1, ChronoUnit.DAYS);
 
-        TotalReport dailyReport = TotalReport.builder()
+        DailyReport dailyReport = DailyReport.builder()
                 .date(getDateAsString(now))
                 .build();
 
-        totalReportRepository.findByDate(getDateAsString(now))
+        dailyReportRepository.findByDate(getDateAsString(now))
                 .ifPresentOrElse(todayReport -> {
                     dailyReport.setOperator(todayReport.getOperator());
-                    totalReportRepository.findByDate(getDateAsString(yesterday))
+                    dailyReportRepository.findByDate(getDateAsString(yesterday))
                             .ifPresentOrElse(yesterdayReport -> dailyReport.setItemReports(calcDailyItems(yesterdayReport, todayReport)),
                                     () -> dailyReport.setItemReports(todayReport.getItemReports()));
                 }, () -> log.warn("Sync the daily total report first"));
@@ -164,7 +211,7 @@ public class ReportServiceImpl implements ReportService {
 
     //items for the day remains
     //removes yesterday items from today items and add the new items from today
-    private List<ItemReport> calcDailyItems(TotalReport yesterdayReport, TotalReport todayReport) {
+    private List<ItemReport> calcDailyItems(DailyReport yesterdayReport, DailyReport todayReport) {
         List<ItemReport> dailyItemsReport = new ArrayList<>();
 
         for (ItemReport yesterdayItemsReport : yesterdayReport.getItemReports()) {
@@ -198,17 +245,17 @@ public class ReportServiceImpl implements ReportService {
         return formattedYesterdayDate.substring(0, formattedYesterdayDate.length() - 3);
     }
 
-    private void upsertTotalReport(TotalReport totalReport) {
-        totalReportRepository.findByDate(totalReport.getDate())
+    private void upsertTotalReport(DailyReport dailyReport) {
+        dailyReportRepository.findByDate(dailyReport.getDate())
                 .ifPresentOrElse(oldReport -> {
-                    totalReportRepository.delete(oldReport);
-                    TotalReport updated = totalReportRepository.save(totalReport);
-                    log.info("Updated total report for " + totalReport.getDate());
+                    dailyReportRepository.delete(oldReport);
+                    DailyReport updated = dailyReportRepository.save(dailyReport);
+                    log.info("Updated total report for " + dailyReport.getDate());
                     log.info("Before update: " + oldReport.toString());
                     log.info("After update: " + updated.toString());
                 }, () -> {
-                    TotalReport created = totalReportRepository.save(totalReport);
-                    log.info("Created total report for " + totalReport.getDate());
+                    DailyReport created = dailyReportRepository.save(dailyReport);
+                    log.info("Created total report for " + dailyReport.getDate());
                     log.info("Details: " + created.toString());
                 });
     }
@@ -250,7 +297,7 @@ public class ReportServiceImpl implements ReportService {
         }
     }
 
-    private static TotalReport readReport(String path) {
+    private static DailyReport readReport(String path) {
         String[] lines = readFile(path).split(System.lineSeparator());
 
         String dateLine = lines[lines.length - 5];
@@ -265,7 +312,7 @@ public class ReportServiceImpl implements ReportService {
         String date = getLineKVP(dateLine)[1];
         String operator = getLineKVP(operatorLine)[2];
 
-        return new TotalReport(operator, date, readItemReports(itemChunkLines), false);
+        return new DailyReport(operator, date, readItemReports(itemChunkLines), false);
     }
 
     private static List<ItemReport> readItemReports(String[][] itemChunkLines) {
@@ -310,7 +357,7 @@ public class ReportServiceImpl implements ReportService {
         return data.toString();
     }
 
-    public static String[][] chunkArray(String[] array, int chunkSize) {
+    private static String[][] chunkArray(String[] array, int chunkSize) {
         int numOfChunks = (int) Math.ceil((double) array.length / chunkSize);
         String[][] output = new String[numOfChunks][];
 

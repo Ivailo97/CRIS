@@ -2,10 +2,10 @@ package ehealth.cashregisterintegration.data.model;
 
 import lombok.*;
 
-import javax.persistence.Column;
-import javax.persistence.Entity;
-import javax.persistence.Table;
+import javax.persistence.*;
+import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
 
 @Builder
 @EqualsAndHashCode(callSuper = true)
@@ -17,17 +17,15 @@ import java.util.Date;
 public class Sale extends BaseEntity {
 
     @Column(nullable = false)
-    private Integer itemNumber;
-
-    @Column(nullable = false)
-    private Integer itemQuantity;
-
-    @Column(nullable = false)
-    private Integer totalSum;
-
-    @Column(nullable = false)
-    private Boolean sync;
+    private BigDecimal total;
 
     @Column(nullable = false)
     private Date date;
+
+    @Column(nullable = false)
+    private boolean sync;
+
+    @OneToMany(cascade = CascadeType.ALL)
+    private List<ItemSale> items;
+
 }

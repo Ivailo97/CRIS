@@ -3,7 +3,6 @@ package ehealth.cashregisterintegration.data.model;
 import lombok.*;
 
 import javax.persistence.*;
-import java.util.List;
 
 @Builder
 @Data
@@ -15,27 +14,18 @@ import java.util.List;
 public class CashRegisterConfig extends BaseEntity {
 
     @Column(nullable = false)
-    private String dirToListen;
-
-    @Column(nullable = false)
     private String deviceName;
 
     @Column(nullable = false)
-    private String deviceLocation;
+    private String location;
 
     @Column(nullable = false)
-    private String astoreUrl;
+    private String dirToListen;
 
     @Column(nullable = false)
-    private String astoreUsername;
+    private String accountingServiceUrl;
 
-    @Column(nullable = false)
-    private String astorePassword;
-
-    @OneToMany(cascade = CascadeType.ALL)
-    private List<Department> departments;
-
-    @OneToMany(cascade = CascadeType.ALL, mappedBy = "cashRegister")
-    private List<Item> items;
+    @OneToOne(optional = false, cascade = CascadeType.ALL)
+    private Credentials credentials;
 
 }

@@ -1,5 +1,6 @@
 package ehealth.cashregisterintegration.config;
 
+import com.google.gson.Gson;
 import org.modelmapper.ModelMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,8 +17,8 @@ public class BeanConfig {
     }
 
     @Bean
-    public ItemConverter itemConverter() {
-        return new ItemConverter();
+    public Gson gson() {
+        return new Gson();
     }
 
     @Bean

@@ -1,6 +1,7 @@
 package ehealth.cashregisterintegration.utils;
 
 import ehealth.cashregisterintegration.data.model.CashRegisterConfig;
+import ehealth.cashregisterintegration.service.DeviceService;
 import ehealth.cashregisterintegration.service.ReportService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +19,8 @@ public class InsertListener implements PostCommitInsertEventListener {
 
     private final ReportService reportService;
 
+    private final DeviceService deviceService;
+
     @Override
     public void onPostInsertCommitFailed(PostInsertEvent event) {
         log.error("Persisting failed for: " + event.getEntity());
@@ -26,8 +29,9 @@ public class InsertListener implements PostCommitInsertEventListener {
     @Override
     public void onPostInsert(PostInsertEvent event) {
         if (event.getEntity() instanceof CashRegisterConfig) {
-            System.out.println("registered a device");
-//            reportService.listenForTotalReports(DELIMITER, true);
+            log.info("Device registered successful!");
+            deviceService.loadConfig();
+            reportService.listenForTotalReports(DELIMITER, true);
         }
     }
 

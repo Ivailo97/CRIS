@@ -1,36 +1,35 @@
 package ehealth.cashregisterintegration.data.dto;
 
+import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import javax.validation.Valid;
+import javax.validation.constraints.NotEmpty;
 import javax.validation.constraints.NotNull;
-import java.util.List;
 
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class DeviceConfigDTO {
 
     @NotNull
+    @NotEmpty
     private String deviceName;
 
     @NotNull
-    private String deviceLocation;
+    @NotEmpty
+    private String location;
 
     @NotNull
+    @NotEmpty
     private String dirToListen;
 
     @NotNull
-    private String astoreUrl;
-
-    @NotNull
-    private String astoreUsername;
-
-    @NotNull
-    private String astorePassword;
+    @NotEmpty
+    private String accountingServiceUrl;
 
     @Valid
-    private List<DepartmentDTO> departments;
-
-    @Valid
-    private List<ItemDTO> items;
+    private CredentialsDTO credentials;
 
 }

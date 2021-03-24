@@ -20,6 +20,8 @@ public class SecurityConfig extends WebSecurityConfigurerAdapter {
 
     private final AuthenticationEntryPoint authEntryPoint;
 
+    //.and().headers().frameOptions().disable()
+
     @Override
     protected void configure(HttpSecurity http) throws Exception {
         http.cors()
